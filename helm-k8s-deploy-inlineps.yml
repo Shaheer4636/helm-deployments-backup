@@ -1,0 +1,135 @@
+parameters:
+- name: environment
+  type: string
+  default: ''
+- name: serviceConnection
+  type: string
+  default: ''
+- name: aksCluster
+  type: string
+  default: ''
+- name: aksRgName
+  type: string
+  default: ''
+- name: k8sNamespace
+  type: string
+  default: ''
+- name: helmReleaseName
+  type: string
+  default: ''
+- name: helmChartPath
+  type: string
+  default: ''
+- name: helmValuesFile
+  type: string
+  default: ''
+- name: helmArguments
+  type: string
+  default: ''
+- name: helmRepoTag
+  type: string
+  default: ''
+
+steps:
+- task: AzureCLI@2
+  displayName: Clone Helm Chart Repo & Deploy
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    addSpnToEnvironment: true
+    scriptType: 'pscore'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      # Use GitHub PAT from variable group (must be secret)
+      $github_pat = "${{ github_pat }}"  # From variable group e.g. GithubPackagesPAT
+
+      # Clone the Helm chart repo
+      $repoUrl = "https://$github_pat@github.com/GoodRx/gdrx-helm-charts.git"
+      $destination = "$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts"
+      Write-Host "Cloning Helm chart repo from $repoUrl"
+      git clone --branch ${{ parameters.helmRepoTag }} $repoUrl temp-charts
+      New-Item -ItemType Directory -Force -Path $destination | Out-Null
+      Copy-Item -Path "temp-charts/*" -Destination $destination -Recurse -Force
+      Remove-Item -Recurse -Force temp-charts
+
+      # Authenticate to AKS
+      $aksCluster = az aks show -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }}
+      if ($aksCluster) {
+        az aks get-credentials -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }} --overwrite-existing
+
+        if ("${{ parameters.serviceConnection }}" -like "*Managed Identity*") {
+          kubelogin convert-kubeconfig -l msi
+        } else {
+          kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
+        }
+      }
+      else {
+        Write-Host "AKS Cluster does not exist in the specified resource group."
+        exit 1
+      }
+
+      # Grant secrets RBAC to Managed Identity
+      kubectl apply -f - <<EOF
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: helm-secret-reader
+        namespace: ${{ parameters.k8sNamespace }}
+      rules:
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["get", "list"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: helm-secret-reader-binding
+        namespace: ${{ parameters.k8sNamespace }}
+      subjects:
+      - kind: User
+        name: edf05a39-6f34-4baa-b2d0-1a7f70473e20
+        apiGroup: rbac.authorization.k8s.io
+      roleRef:
+        kind: Role
+        name: helm-secret-reader
+        apiGroup: rbac.authorization.k8s.io
+      EOF
+
+      # Deploy with Helm
+      helm upgrade --install ${{ parameters.helmReleaseName }} `
+        -f ${{ parameters.helmValuesFile }} `
+        --namespace ${{ parameters.k8sNamespace }} `
+        ${{ parameters.helmArguments }} `
+        ${{ parameters.helmChartPath }}
+
+- task: AzureCLI@2
+  displayName: Debug
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    addSpnToEnvironment: true
+    scriptType: 'pscore'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      $aksCluster = az aks show -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }}
+      if ($aksCluster) {
+        az aks get-credentials -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }} --overwrite-existing
+        kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
+      }
+      else {
+        Write-Host "AKS Cluster does not exist in the specified resource group."
+        exit 1
+      }
+
+      echo "Show all namespaces..."
+      kubectl get ns
+
+      echo "Show all charts installed..."
+      helm ls -A
+
+      echo "Show all charts installed in prescripto namespace..."
+      helm ls -n ${{ parameters.k8sNamespace }}
+
+      echo "Show pods running in prescripto namespace..."
+      kubectl get pods -n ${{ parameters.k8sNamespace }}
+
+      echo "Show svc in prescripto namespace..."
+      kubectl get svc -n ${{ parameters.k8sNamespace }}
