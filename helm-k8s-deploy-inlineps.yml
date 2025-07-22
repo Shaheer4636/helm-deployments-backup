@@ -39,11 +39,8 @@ steps:
     scriptType: 'pscore'
     scriptLocation: 'inlineScript'
     inlineScript: |
-      # Get GitHub PAT from env variable
-      $github_pat = $env:GITHUB_PAT
-
-      # Clone the Helm chart repo
-      $repoUrl = "https://$github_pat@github.com/GoodRx/gdrx-helm-charts.git"
+      # Clone the Helm chart repo using secure GitHub PAT
+      $repoUrl = "https://$env:GITHUB_PAT@github.com/GoodRx/gdrx-helm-charts.git"
       $destination = "$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts"
 
       Write-Host "Cloning Helm chart repo from $repoUrl"
@@ -68,7 +65,7 @@ steps:
         exit 1
       }
 
-      # Grant RBAC to Managed Identity
+      # Grant RBAC to Managed Identity for Helm
       kubectl apply -f - <<EOF
       apiVersion: rbac.authorization.k8s.io/v1
       kind: Role
@@ -128,10 +125,10 @@ steps:
       echo "Show all charts installed..."
       helm ls -A
 
-      echo "Show all charts installed in namespace..."
+      echo "Show charts in namespace..."
       helm ls -n ${{ parameters.k8sNamespace }}
 
-      echo "Show pods running in namespace..."
+      echo "Show pods in namespace..."
       kubectl get pods -n ${{ parameters.k8sNamespace }}
 
       echo "Show services in namespace..."
