@@ -39,7 +39,7 @@ steps:
     scriptType: 'pscore'
     scriptLocation: 'inlineScript'
     inlineScript: |
-      # Clone the Helm chart repo using secure GitHub PAT
+      # GitHub PAT is passed in env:GITHUB_PAT
       $repoUrl = "https://$env:GITHUB_PAT@github.com/GoodRx/gdrx-helm-charts.git"
       $destination = "$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts"
 
@@ -50,54 +50,58 @@ steps:
       Remove-Item -Recurse -Force temp-charts
 
       # Authenticate to AKS
-      $aksCluster = az aks show -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }}
+      $aksCluster = az aks show -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}"
       if ($aksCluster) {
-        az aks get-credentials -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }} --overwrite-existing
+        az aks get-credentials -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}" --overwrite-existing
 
         if ("${{ parameters.serviceConnection }}" -like "*Managed Identity*") {
           kubelogin convert-kubeconfig -l msi
         } else {
           kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
         }
-      }
-      else {
-        Write-Host "AKS Cluster does not exist in the specified resource group."
+      } else {
+        Write-Host "AKS Cluster not found."
         exit 1
       }
 
-      # Grant RBAC to Managed Identity for Helm
-      kubectl apply -f - <<EOF
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: Role
-      metadata:
-        name: helm-secret-reader
-        namespace: ${{ parameters.k8sNamespace }}
-      rules:
-      - apiGroups: [""]
-        resources: ["secrets"]
-        verbs: ["get", "list"]
-      ---
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: RoleBinding
-      metadata:
-        name: helm-secret-reader-binding
-        namespace: ${{ parameters.k8sNamespace }}
-      subjects:
-      - kind: User
-        name: edf05a39-6f34-4baa-b2d0-1a7f70473e20
-        apiGroup: rbac.authorization.k8s.io
-      roleRef:
-        kind: Role
-        name: helm-secret-reader
-        apiGroup: rbac.authorization.k8s.io
-      EOF
+      # Create RBAC YAML and apply
+      $rbacYaml = @"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: helm-secret-reader
+  namespace: ${{ parameters.k8sNamespace }}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: helm-secret-reader-binding
+  namespace: ${{ parameters.k8sNamespace }}
+subjects:
+- kind: User
+  name: edf05a39-6f34-4baa-b2d0-1a7f70473e20
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: helm-secret-reader
+  apiGroup: rbac.authorization.k8s.io
+"@
 
-      # Deploy with Helm
-      helm upgrade --install ${{ parameters.helmReleaseName }} `
-        -f ${{ parameters.helmValuesFile }} `
-        --namespace ${{ parameters.k8sNamespace }} `
+      $rbacFile = "rbac.yaml"
+      $rbacYaml | Out-File -FilePath $rbacFile -Encoding ascii
+      kubectl apply -f $rbacFile
+
+      # Deploy using Helm
+      helm upgrade --install `
+        "${{ parameters.helmReleaseName }}" `
+        -f "${{ parameters.helmValuesFile }}" `
+        --namespace "${{ parameters.k8sNamespace }}" `
         ${{ parameters.helmArguments }} `
-        ${{ parameters.helmChartPath }}
+        "${{ parameters.helmChartPath }}"
   env:
     GITHUB_PAT: $(github_pat)
 
@@ -109,27 +113,20 @@ steps:
     scriptType: 'pscore'
     scriptLocation: 'inlineScript'
     inlineScript: |
-      $aksCluster = az aks show -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }}
-      if ($aksCluster) {
-        az aks get-credentials -n ${{ parameters.aksCluster }} -g ${{ parameters.aksRgName }} --overwrite-existing
-        kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
-      }
-      else {
-        Write-Host "AKS Cluster does not exist in the specified resource group."
-        exit 1
-      }
+      az aks get-credentials -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}" --overwrite-existing
+      kubelogin convert-kubeconfig -l msi
 
-      echo "Show all namespaces..."
+      echo "Show namespaces:"
       kubectl get ns
 
-      echo "Show all charts installed..."
+      echo "Helm releases (all):"
       helm ls -A
 
-      echo "Show charts in namespace..."
-      helm ls -n ${{ parameters.k8sNamespace }}
+      echo "Helm releases in ${{ parameters.k8sNamespace }}:"
+      helm ls -n "${{ parameters.k8sNamespace }}"
 
-      echo "Show pods in namespace..."
-      kubectl get pods -n ${{ parameters.k8sNamespace }}
+      echo "Pods:"
+      kubectl get pods -n "${{ parameters.k8sNamespace }}"
 
-      echo "Show services in namespace..."
-      kubectl get svc -n ${{ parameters.k8sNamespace }}
+      echo "Services:"
+      kubectl get svc -n "${{ parameters.k8sNamespace }}"
