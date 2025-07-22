@@ -39,7 +39,7 @@ steps:
     scriptType: 'pscore'
     scriptLocation: 'inlineScript'
     inlineScript: |
-      # GitHub PAT is passed in env:GITHUB_PAT
+      # Load GitHub PAT from environment variable
       $repoUrl = "https://$env:GITHUB_PAT@github.com/GoodRx/gdrx-helm-charts.git"
       $destination = "$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts"
 
@@ -60,11 +60,11 @@ steps:
           kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
         }
       } else {
-        Write-Host "AKS Cluster not found."
+        Write-Host "AKS Cluster does not exist in the specified resource group."
         exit 1
       }
 
-      # Create RBAC YAML and apply
+      # Write RBAC YAML to file and apply
       $rbacYaml = @"
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -90,12 +90,11 @@ roleRef:
   name: helm-secret-reader
   apiGroup: rbac.authorization.k8s.io
 "@
+      $rbacPath = "rbac.yaml"
+      $rbacYaml | Out-File -FilePath $rbacPath -Encoding ascii
+      kubectl apply -f $rbacPath
 
-      $rbacFile = "rbac.yaml"
-      $rbacYaml | Out-File -FilePath $rbacFile -Encoding ascii
-      kubectl apply -f $rbacFile
-
-      # Deploy using Helm
+      # Deploy with Helm
       helm upgrade --install `
         "${{ parameters.helmReleaseName }}" `
         -f "${{ parameters.helmValuesFile }}" `
@@ -116,17 +115,17 @@ roleRef:
       az aks get-credentials -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}" --overwrite-existing
       kubelogin convert-kubeconfig -l msi
 
-      echo "Show namespaces:"
+      echo "Namespaces:"
       kubectl get ns
 
-      echo "Helm releases (all):"
+      echo "Helm releases:"
       helm ls -A
 
-      echo "Helm releases in ${{ parameters.k8sNamespace }}:"
+      echo "Helm releases in namespace:"
       helm ls -n "${{ parameters.k8sNamespace }}"
 
-      echo "Pods:"
+      echo "Pods in namespace:"
       kubectl get pods -n "${{ parameters.k8sNamespace }}"
 
-      echo "Services:"
+      echo "Services in namespace:"
       kubectl get svc -n "${{ parameters.k8sNamespace }}"
