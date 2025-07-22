@@ -32,21 +32,22 @@ parameters:
 
 steps:
 - task: AzureCLI@2
-  displayName: Clone Helm Chart Repo & Deploy
+  displayName: 'Clone Helm Chart Repo & Deploy'
   inputs:
     azureSubscription: ${{ parameters.serviceConnection }}
     addSpnToEnvironment: true
     scriptType: 'pscore'
     scriptLocation: 'inlineScript'
     inlineScript: |
-      # Use GitHub PAT from variable group (must be secret)
-      $github_pat = "${{ github_pat }}"  # From variable group e.g. GithubPackagesPAT
+      # Get GitHub PAT from env variable
+      $github_pat = $env:GITHUB_PAT
 
       # Clone the Helm chart repo
       $repoUrl = "https://$github_pat@github.com/GoodRx/gdrx-helm-charts.git"
       $destination = "$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts"
+
       Write-Host "Cloning Helm chart repo from $repoUrl"
-      git clone --branch ${{ parameters.helmRepoTag }} $repoUrl temp-charts
+      git clone --branch "${{ parameters.helmRepoTag }}" $repoUrl temp-charts
       New-Item -ItemType Directory -Force -Path $destination | Out-Null
       Copy-Item -Path "temp-charts/*" -Destination $destination -Recurse -Force
       Remove-Item -Recurse -Force temp-charts
@@ -67,7 +68,7 @@ steps:
         exit 1
       }
 
-      # Grant secrets RBAC to Managed Identity
+      # Grant RBAC to Managed Identity
       kubectl apply -f - <<EOF
       apiVersion: rbac.authorization.k8s.io/v1
       kind: Role
@@ -100,9 +101,11 @@ steps:
         --namespace ${{ parameters.k8sNamespace }} `
         ${{ parameters.helmArguments }} `
         ${{ parameters.helmChartPath }}
+  env:
+    GITHUB_PAT: $(github_pat)
 
 - task: AzureCLI@2
-  displayName: Debug
+  displayName: 'Debug Output'
   inputs:
     azureSubscription: ${{ parameters.serviceConnection }}
     addSpnToEnvironment: true
@@ -125,11 +128,11 @@ steps:
       echo "Show all charts installed..."
       helm ls -A
 
-      echo "Show all charts installed in prescripto namespace..."
+      echo "Show all charts installed in namespace..."
       helm ls -n ${{ parameters.k8sNamespace }}
 
-      echo "Show pods running in prescripto namespace..."
+      echo "Show pods running in namespace..."
       kubectl get pods -n ${{ parameters.k8sNamespace }}
 
-      echo "Show svc in prescripto namespace..."
+      echo "Show services in namespace..."
       kubectl get svc -n ${{ parameters.k8sNamespace }}
