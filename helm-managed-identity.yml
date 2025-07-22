@@ -1,0 +1,68 @@
+trigger: none
+pr: none
+
+variables:
+  - group: GithubPackagesPAT
+
+stages:
+- template: /sysops/ado/templates/stages/helm-k8s-deployment.yml
+  parameters:
+    environments:
+      - name: "dev_1"
+        buildDocker: "true"
+        preDeploySteps:
+          - task: AzureCLI@2
+            displayName: 'Grant AKS access to Managed Identity for Helm'
+            inputs:
+              azureSubscription: 'Azure Dev/Test - Managed Identity'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                NAMESPACE="buydown"
+                PRINCIPAL_ID="edf05a39-6f34-4baa-b2d0-1a7f70473e20"
+
+                echo "Applying RBAC in namespace $NAMESPACE for MI $PRINCIPAL_ID"
+
+                cat <<EOF | kubectl apply -f -
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: Role
+                metadata:
+                  name: helm-secret-reader
+                  namespace: $NAMESPACE
+                rules:
+                - apiGroups: [""]
+                  resources: ["secrets"]
+                  verbs: ["get", "list"]
+                ---
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: RoleBinding
+                metadata:
+                  name: helm-secret-reader-binding
+                  namespace: $NAMESPACE
+                subjects:
+                - kind: User
+                  name: $PRINCIPAL_ID
+                  apiGroup: rbac.authorization.k8s.io
+                roleRef:
+                  kind: Role
+                  name: helm-secret-reader
+                  apiGroup: rbac.authorization.k8s.io
+                EOF
+
+        applications:
+          - name: buydown-cache-manager
+            dockerBuildContext: '$(Build.SourcesDirectory)'
+            dockerPathDockerfile: '$(Build.SourcesDirectory)/SC.Buydown.CacheManager.WebApi/Dockerfile'
+            dockerContainerRegistry: 'crscriptcycledev1'
+            dockerRepository: 'buydown-cache-manager'
+            dockerTags: '$(Build.BuildId)'
+            serviceConnection: 'Azure Dev/Test - Managed Identity'
+            adoEnvironment: 'AKS - Dev'
+            aksCluster: 'aks-scriptcycle-dev-1'
+            aksRgName: 'rg-scriptcycle-aks-dev-1'
+            k8sNamespace: 'buydown'
+            helmReleaseName: 'buydown-cache-manager'
+            helmChartPath: '$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts/goodrx-app'
+            helmValuesFile: '$(Build.SourcesDirectory)/sysops/helm/buydown-cache-manager-azure-values-dev.yaml'
+            helmArguments: '--set fullnameOverride=buydown-cache-manager --set deployment.appImage="crscriptcycledev1.azurecr.io/buydown-cache-manager:$(Build.BuildId)" --debug'
+            helmRepoTag: 'goodrx-app/v2.0.11-beta'
