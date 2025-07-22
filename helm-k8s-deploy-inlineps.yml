@@ -39,7 +39,7 @@ steps:
     scriptType: 'pscore'
     scriptLocation: 'inlineScript'
     inlineScript: |
-      # Load GitHub PAT from environment variable
+      # Clone Helm charts using GitHub PAT
       $repoUrl = "https://$env:GITHUB_PAT@github.com/GoodRx/gdrx-helm-charts.git"
       $destination = "$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts"
 
@@ -50,27 +50,21 @@ steps:
       Remove-Item -Recurse -Force temp-charts
 
       # Authenticate to AKS
-      $aksCluster = az aks show -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}"
-      if ($aksCluster) {
-        az aks get-credentials -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}" --overwrite-existing
+      az aks get-credentials -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}" --overwrite-existing
 
-        if ("${{ parameters.serviceConnection }}" -like "*Managed Identity*") {
-          kubelogin convert-kubeconfig -l msi
-        } else {
-          kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
-        }
+      if ("${{ parameters.serviceConnection }}" -like "*Managed Identity*") {
+        kubelogin convert-kubeconfig -l msi
       } else {
-        Write-Host "AKS Cluster does not exist in the specified resource group."
-        exit 1
+        kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
       }
 
-      # Write RBAC YAML to file and apply
-      $rbacYaml = @"
+      # Generate RBAC YAML
+      $rbacContent = @"
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: helm-secret-reader
-  namespace: ${{ parameters.k8sNamespace }}
+  namespace: $env:K8S_NAMESPACE
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -80,7 +74,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: helm-secret-reader-binding
-  namespace: ${{ parameters.k8sNamespace }}
+  namespace: $env:K8S_NAMESPACE
 subjects:
 - kind: User
   name: edf05a39-6f34-4baa-b2d0-1a7f70473e20
@@ -90,9 +84,10 @@ roleRef:
   name: helm-secret-reader
   apiGroup: rbac.authorization.k8s.io
 "@
-      $rbacPath = "rbac.yaml"
-      $rbacYaml | Out-File -FilePath $rbacPath -Encoding ascii
-      kubectl apply -f $rbacPath
+
+      $rbacFile = "rbac.yaml"
+      $rbacContent | Out-File -FilePath $rbacFile -Encoding utf8
+      kubectl apply -f $rbacFile
 
       # Deploy with Helm
       helm upgrade --install `
@@ -103,6 +98,7 @@ roleRef:
         "${{ parameters.helmChartPath }}"
   env:
     GITHUB_PAT: $(github_pat)
+    K8S_NAMESPACE: ${{ parameters.k8sNamespace }}
 
 - task: AzureCLI@2
   displayName: 'Debug Output'
@@ -118,14 +114,14 @@ roleRef:
       echo "Namespaces:"
       kubectl get ns
 
-      echo "Helm releases:"
+      echo "Helm releases in all namespaces:"
       helm ls -A
 
-      echo "Helm releases in namespace:"
+      echo "Helm releases in selected namespace:"
       helm ls -n "${{ parameters.k8sNamespace }}"
 
-      echo "Pods in namespace:"
+      echo "Pods:"
       kubectl get pods -n "${{ parameters.k8sNamespace }}"
 
-      echo "Services in namespace:"
+      echo "Services:"
       kubectl get svc -n "${{ parameters.k8sNamespace }}"
