@@ -31,7 +31,6 @@ parameters:
     default: ''
 
 steps:
-
 - task: AzureCLI@2
   displayName: Clone Helm Chart Repo & Deploy
   inputs:
@@ -41,14 +40,14 @@ steps:
     scriptLocation: 'inlineScript'
     inlineScript: |
       # Use GitHub PAT from variable group
-      $github_pat = "$env:github_pat"
+      $github_pat = "$(github_pat)"
 
       # Clone Helm chart repo
       $repoUrl = "https://$github_pat@github.com/GoodRx/gdrx-helm-charts.git"
       $destination = "$(Build.SourcesDirectory)/sysops/helm/gdrx-helm-charts"
 
       Write-Host "Cloning Helm chart repo from $repoUrl"
-      git clone --branch ${{ parameters.helmRepoTag }} $repoUrl temp-charts
+      git clone --branch "${{ parameters.helmRepoTag }}" $repoUrl temp-charts
       New-Item -ItemType Directory -Force -Path $destination | Out-Null
       Copy-Item -Path "temp-charts/*" -Destination $destination -Recurse -Force
       Remove-Item -Recurse -Force temp-charts
@@ -57,29 +56,32 @@ steps:
       $aksCluster = az aks show -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}"
       if ($aksCluster) {
         az aks get-credentials -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}" --overwrite-existing
-
         if ("${{ parameters.serviceConnection }}" -like "*Managed Identity*") {
           kubelogin convert-kubeconfig -l msi
-        } else {
+        }
+        else {
           kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
         }
-      } else {
+      }
+      else {
         Write-Host "AKS Cluster does not exist in the specified resource group."
         exit 1
       }
 
       # Create RBAC for helm secret read access (if not exists)
-      $rbac = @"
+      $namespace = "${{ parameters.k8sNamespace }}"
+      $rbac = @'
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: helm-secret-reader
-  namespace: ${{ parameters.k8sNamespace }}
+  namespace: __NAMESPACE__
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
   verbs: ["get", "list"]
-"@
+'@ -replace '__NAMESPACE__', $namespace
+
       $rbac | Out-File rbac.yaml -Encoding utf8
       kubectl apply -f rbac.yaml
 
@@ -98,15 +100,33 @@ rules:
     scriptType: 'pscore'
     scriptLocation: 'inlineScript'
     inlineScript: |
-      # Show all namespaces
+      # Authenticate to AKS
+      $aksCluster = az aks show -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}"
+      if ($aksCluster) {
+        az aks get-credentials -n "${{ parameters.aksCluster }}" -g "${{ parameters.aksRgName }}" --overwrite-existing
+        if ("${{ parameters.serviceConnection }}" -like "*Managed Identity*") {
+          kubelogin convert-kubeconfig -l msi
+        }
+        else {
+          kubelogin convert-kubeconfig -l spn --client-id $env:servicePrincipalId --client-secret $env:servicePrincipalKey --tenant-id $env:tenantId
+        }
+      }
+      else {
+        Write-Host "AKS Cluster does not exist in the specified resource group."
+        exit 1
+      }
+
+      Write-Host "Showing all namespaces..."
       kubectl get ns
 
-      # Show all charts installed
+      Write-Host "Listing all Helm charts..."
       helm ls -A
 
-      # Show all charts in target namespace
+      Write-Host "Listing Helm charts in target namespace..."
       helm ls -n "${{ parameters.k8sNamespace }}"
 
-      # Show pods and svc
+      Write-Host "Listing pods in target namespace..."
       kubectl get pods -n "${{ parameters.k8sNamespace }}"
+
+      Write-Host "Listing services in target namespace..."
       kubectl get svc -n "${{ parameters.k8sNamespace }}"
